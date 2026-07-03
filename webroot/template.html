@@ -148,6 +148,42 @@
 
     /* ── Dynamic form ─────────────────────────────────────────────── */
     #report-form .btn-primary { margin-top: .5rem; }
+    #report-form .form-label { font-size: .82rem; font-weight: 600; }
+    #report-form .form-text { font-size: .74rem; }
+    #report-form .form-text code,
+    .tmpl-textblock code {
+      background: var(--hover-bg);
+      padding: .05rem .3rem;
+      border-radius: .2rem;
+      font-size: .92em;
+    }
+
+    /* text_block prose */
+    .tmpl-textblock {
+      font-size: .82rem;
+      color: var(--bs-secondary-color);
+      border-left: 3px solid var(--card-border);
+      padding: .1rem 0 .1rem .75rem;
+    }
+    .tmpl-textblock a { color: var(--bs-info); }
+
+    /* Repeatable instances */
+    .repeat-item {
+      display: flex;
+      align-items: flex-start;
+      gap: .4rem;
+      margin-bottom: .4rem;
+    }
+    .repeat-item > :first-child { flex: 1; min-width: 0; }
+    .repeat-remove {
+      color: var(--placeholder);
+      padding: .2rem .4rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .repeat-remove:hover { color: var(--bs-danger); }
+
+    .attr-instance { width: 100%; }
   </style>
 </head>
 <body data-page="template">
@@ -244,6 +280,124 @@
     const d = document.createElement('div');
     d.textContent = str == null ? '' : String(str);
     return d.innerHTML;
+  }
+
+  // Widgets register a value gatherer here; the submit step (C9) walks it to
+  // build the `values` payload. Live listeners (info preview C7, validation C9)
+  // are notified whenever a field changes. Both are reset per template load.
+  let fieldWidgets = [];          // [{id, type, mandatory, el, gather}]
+  let fieldChangeListeners = [];  // [fn]
+
+  function notifyFieldChange() {
+    fieldChangeListeners.forEach(fn => { try { fn(); } catch (_) {} });
+  }
+
+  // ── Safe Markdown (help text, text_block, event_report bodies) ─
+  // Escapes first, then applies a small inline subset. No raw HTML passes
+  // through and link hrefs are scheme-checked (S5): only http/https/mailto.
+  function safeMarkdown(src) {
+    if (typeof src !== 'string' || src === '') return '';
+    let s = escHtml(src);
+    s = s.replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`);
+    s = s.replace(/\*\*([^*]+)\*\*/g, (_m, c) => `<strong>${c}</strong>`);
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, (_m, pre, c) => `${pre}<em>${c}</em>`);
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, url) => {
+      if (/^(https?:|mailto:)/i.test(url)) {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      }
+      return `${text} (${url})`;
+    });
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  }
+
+  // Build a labelled field group: `.mb-3` with a label (+ mandatory asterisk)
+  // and optional safe-Markdown help. Returns the group and its body slot.
+  function buildFieldGroup(el, { labelText, helpText } = {}) {
+    const group = document.createElement('div');
+    group.className = 'mb-3';
+
+    const label = document.createElement('label');
+    label.className = 'form-label mb-1';
+    label.textContent = labelText != null ? labelText : (el.label || el.id || '');
+    if (el.mandatory) {
+      const star = document.createElement('span');
+      star.className = 'text-danger';
+      star.textContent = ' *';
+      label.appendChild(star);
+    }
+    group.appendChild(label);
+
+    const help = helpText != null ? helpText : el.help;
+    if (help) {
+      const small = document.createElement('small');
+      small.className = 'form-text text-muted d-block mb-1';
+      small.innerHTML = safeMarkdown(help);
+      group.appendChild(small);
+    }
+    return { group, label };
+  }
+
+  // Reusable repeater: seeds one instance, offers "Add …", and per-instance
+  // remove (hidden while a single instance remains). `makeItem()` returns
+  // `{node, gather}`; `gatherAll()` returns the non-empty instance values.
+  function repeatableGroup(makeItem, { itemLabel = 'another' } = {}) {
+    const container = document.createElement('div');
+    const list = document.createElement('div');
+    container.appendChild(list);
+    const items = [];   // [{row, gather}]
+
+    function updateRemoveVisibility() {
+      items.forEach(it => {
+        const btn = it.row.querySelector('.repeat-remove');
+        if (btn) btn.style.display = items.length > 1 ? '' : 'none';
+      });
+    }
+    function addInstance() {
+      const { node, gather } = makeItem();
+      const row = document.createElement('div');
+      row.className = 'repeat-item';
+      row.appendChild(node);
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn btn-sm repeat-remove';
+      rm.title = 'Remove';
+      rm.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      rm.addEventListener('click', () => {
+        const idx = items.findIndex(it => it.row === row);
+        if (idx >= 0) items.splice(idx, 1);
+        row.remove();
+        updateRemoveVisibility();
+        notifyFieldChange();
+      });
+      row.appendChild(rm);
+      list.appendChild(row);
+      items.push({ row, gather });
+      updateRemoveVisibility();
+    }
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-secondary mt-1';
+    addBtn.innerHTML = `<i class="fa-solid fa-plus me-1"></i>Add ${itemLabel}`;
+    addBtn.addEventListener('click', () => { addInstance(); notifyFieldChange(); });
+    container.appendChild(addBtn);
+
+    addInstance();   // seed one
+
+    return {
+      node: container,
+      gatherAll() {
+        const out = [];
+        for (const it of items) {
+          const v = it.gather();
+          if (v === undefined || v === null || v === '') continue;
+          if (Array.isArray(v) && v.length === 0) continue;
+          out.push(v);
+        }
+        return out;
+      }
+    };
   }
 
   // ── Template picker ────────────────────────────────────────────
@@ -392,6 +546,8 @@
   // section cards. Interactive element widgets are filled in C3–C6.
   function renderDefinition(definition) {
     currentDefinition = definition;
+    fieldWidgets = [];
+    fieldChangeListeners = [];
 
     // Header banner: name + description + library tags.
     const headerEl = document.getElementById('template-header');
@@ -471,9 +627,9 @@
   // C3–C6; unknown/not-yet-supported types fall through to a defensive note.
   function renderElement(el) {
     switch (el.type) {
-      case 'text_block':
-      case 'object_reference':
-        return null;               // non-interactive; handled in later commits
+      case 'text_block':      return renderTextBlock(el);
+      case 'attribute_field': return renderAttributeField(el);
+      case 'object_reference': return null;   // materialised server-side (no UI)
       default: {
         const note = document.createElement('div');
         note.className = 'mb-3 text-secondary';
@@ -482,6 +638,57 @@
         return note;
       }
     }
+  }
+
+  // text_block → safe-Markdown prose, no input, no data.
+  function renderTextBlock(el) {
+    const block = document.createElement('div');
+    block.className = 'tmpl-textblock mb-3';
+    block.innerHTML = safeMarkdown(el.content || '');
+    return block;
+  }
+
+  // attribute_field → text input(s). `default_value` prefills; `repeatable`
+  // adds Add/remove instances. Gathers `str` (single) or `list[str]` (repeatable).
+  // A per-instance `.attr-tag-hook` slot is left for a future tag picker (D3).
+  function renderAttributeField(el) {
+    const misp = el.misp || {};
+    const { group } = buildFieldGroup(el);
+
+    function makeInstance(prefill) {
+      const wrap = document.createElement('div');
+      wrap.className = 'attr-instance';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'form-control form-control-sm';
+      input.placeholder = `${misp.type || ''}${misp.category ? ' · ' + misp.category : ''}`.trim();
+      if (prefill) input.value = prefill;
+      input.addEventListener('input', notifyFieldChange);
+      wrap.appendChild(input);
+      // Future per-attribute tag picker slots in here without restructuring.
+      const hook = document.createElement('div');
+      hook.className = 'attr-tag-hook';
+      hook.dataset.attrHook = '1';
+      wrap.appendChild(hook);
+      return { node: wrap, input };
+    }
+
+    let gather;
+    if (el.repeatable) {
+      const rg = repeatableGroup(() => {
+        const inst = makeInstance(misp.default_value);
+        return { node: inst.node, gather: () => inst.input.value.trim() || undefined };
+      }, { itemLabel: 'value' });
+      group.appendChild(rg.node);
+      gather = () => { const vals = rg.gatherAll(); return vals.length ? vals : undefined; };
+    } else {
+      const inst = makeInstance(misp.default_value);
+      group.appendChild(inst.node);
+      gather = () => inst.input.value.trim() || undefined;
+    }
+
+    fieldWidgets.push({ id: el.id, type: 'attribute_field', mandatory: !!el.mandatory, el, gather });
+    return group;
   }
 
   // ── Event-level defaults + live info preview ───────────────────
