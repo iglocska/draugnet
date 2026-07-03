@@ -184,6 +184,24 @@
     .repeat-remove:hover { color: var(--bs-danger); }
 
     .attr-instance { width: 100%; }
+
+    /* object_field instances */
+    .object-name {
+      font-size: .75rem;
+      color: var(--bs-secondary-color);
+    }
+    .object-name code {
+      background: var(--hover-bg);
+      padding: .05rem .3rem;
+      border-radius: .2rem;
+    }
+    .object-instance {
+      border: 1px solid var(--card-border);
+      border-radius: .4rem;
+      padding: .7rem .8rem;
+      background: rgba(255,255,255,.02);
+    }
+    .repeat-item > .object-instance { flex: 1; }
   </style>
 </head>
 <body data-page="template">
@@ -629,6 +647,7 @@
     switch (el.type) {
       case 'text_block':      return renderTextBlock(el);
       case 'attribute_field': return renderAttributeField(el);
+      case 'object_field':    return renderObjectField(el);
       case 'object_reference': return null;   // materialised server-side (no UI)
       default: {
         const note = document.createElement('div');
@@ -688,6 +707,166 @@
     }
 
     fieldWidgets.push({ id: el.id, type: 'attribute_field', mandatory: !!el.mandatory, el, gather });
+    return group;
+  }
+
+  // Resolve the visible relations for an object_field: the author's `relations`
+  // (honouring label_override/help_override/mandatory/default_value, skipping
+  // hidden) when present, else the object template's own attributes by
+  // ui-priority. Hidden relations aren't rendered — their default_value is
+  // applied server-side regardless.
+  function resolveRelations(el, objDef) {
+    const attrs = (objDef && objDef.attributes) || {};
+    const authored = Array.isArray(el.relations) ? el.relations : [];
+    if (authored.length) {
+      return authored.filter(r => r && r.object_relation && !r.hidden).map(r => {
+        const meta = attrs[r.object_relation] || {};
+        return {
+          relation: r.object_relation,
+          labelText: r.label_override || r.object_relation,
+          helpText: r.help_override || meta.description || null,
+          mandatory: !!r.mandatory,
+          defaultValue: r.default_value != null ? r.default_value : null,
+          meta,
+        };
+      });
+    }
+    const required = (objDef && objDef.required) || [];
+    return Object.entries(attrs)
+      .sort((a, b) => (b[1]['ui-priority'] || 0) - (a[1]['ui-priority'] || 0))
+      .map(([rel, meta]) => ({
+        relation: rel,
+        labelText: rel,
+        helpText: meta.description || null,
+        mandatory: required.includes(rel),
+        defaultValue: null,
+        meta,
+      }));
+  }
+
+  // Build one relation control: label (+ mandatory marker) + Markdown help +
+  // a <select> when the object template constrains values, else a text input.
+  function buildRelationControl(r) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mb-2';
+
+    const label = document.createElement('label');
+    label.className = 'form-label mb-1';
+    label.textContent = r.labelText;
+    if (r.mandatory) {
+      const star = document.createElement('span');
+      star.className = 'text-danger';
+      star.textContent = ' *';
+      label.appendChild(star);
+    }
+    wrap.appendChild(label);
+    if (r.helpText) {
+      const small = document.createElement('small');
+      small.className = 'form-text text-muted d-block mb-1';
+      small.innerHTML = safeMarkdown(r.helpText);
+      wrap.appendChild(small);
+    }
+
+    const options = Array.isArray(r.meta.values_list) && r.meta.values_list.length
+      ? r.meta.values_list : null;
+    let control;
+    if (options) {
+      control = document.createElement('select');
+      control.className = 'form-select form-select-sm';
+      const blank = document.createElement('option');
+      blank.value = ''; blank.textContent = '—';
+      control.appendChild(blank);
+      options.forEach(v => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        control.appendChild(o);
+      });
+      if (r.defaultValue != null) control.value = r.defaultValue;
+    } else {
+      control = document.createElement('input');
+      control.type = 'text';
+      control.className = 'form-control form-control-sm';
+      control.placeholder = r.meta['misp-attribute'] || '';
+      if (r.defaultValue != null) control.value = r.defaultValue;
+    }
+    control.addEventListener('input', notifyFieldChange);
+    control.addEventListener('change', notifyFieldChange);
+    wrap.appendChild(control);
+    return { node: wrap, getValue: () => (control.value || '').trim() };
+  }
+
+  // object_field → a MISP object built from the chosen object template. Fetches
+  // the template (async) then renders its relations; repeatable object_fields
+  // add whole object instances. Gathers `{relation: value}` or a list of them.
+  function renderObjectField(el) {
+    const { group } = buildFieldGroup(el);
+    const objName = (el.object_template || {}).name || '';
+
+    const badge = document.createElement('div');
+    badge.className = 'object-name mb-2';
+    badge.innerHTML = `<i class="fa-solid fa-cube me-1"></i>MISP object: <code>${escHtml(objName)}</code>`;
+    group.appendChild(badge);
+
+    const host = document.createElement('div');
+    const loading = document.createElement('div');
+    loading.className = 'text-secondary';
+    loading.style.fontSize = '.8rem';
+    loading.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Loading object template…';
+    host.appendChild(loading);
+    group.appendChild(host);
+
+    let gatherFn = () => undefined;   // until the template loads
+    fieldWidgets.push({ id: el.id, type: 'object_field', mandatory: !!el.mandatory, el, gather: () => gatherFn() });
+
+    (async () => {
+      let objDef = null;
+      try {
+        const res = await fetch(`${apiBase()}/object_templates?template=${encodeURIComponent(objName)}`);
+        if (res.ok) objDef = await res.json();
+        else console.warn(`object template "${objName}" fetch failed: HTTP ${res.status}`);
+      } catch (err) {
+        console.warn(`object template "${objName}" fetch error:`, err);
+      }
+      loading.remove();
+      const relations = resolveRelations(el, objDef || {});
+      if (!relations.length) {
+        const warn = document.createElement('div');
+        warn.className = 'text-warning';
+        warn.style.fontSize = '.8rem';
+        warn.textContent = 'No relations available for this object.';
+        host.appendChild(warn);
+        return;
+      }
+
+      const makeInstance = () => {
+        const card = document.createElement('div');
+        card.className = 'object-instance';
+        const controls = [];
+        relations.forEach(r => {
+          const rc = buildRelationControl(r);
+          card.appendChild(rc.node);
+          controls.push({ relation: r.relation, getValue: rc.getValue });
+        });
+        const gather = () => {
+          const map = {};
+          controls.forEach(c => { const v = c.getValue(); if (v) map[c.relation] = v; });
+          return Object.keys(map).length ? map : undefined;
+        };
+        return { node: card, gather };
+      };
+
+      if (el.repeatable) {
+        const rg = repeatableGroup(makeInstance, { itemLabel: 'instance' });
+        host.appendChild(rg.node);
+        gatherFn = () => { const arr = rg.gatherAll(); return arr.length ? arr : undefined; };
+      } else {
+        const inst = makeInstance();
+        host.appendChild(inst.node);
+        gatherFn = () => inst.gather();
+      }
+      notifyFieldChange();
+    })();
+
     return group;
   }
 
