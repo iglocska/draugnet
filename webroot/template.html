@@ -238,11 +238,251 @@
   // ── Module state (reset on every template load) ────────────────
   let currentDefinition = null;
 
+  function apiBase() { return baseUrl || window.location.origin; }
+
+  function escHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str == null ? '' : String(str);
+    return d.innerHTML;
+  }
+
   // ── Template picker ────────────────────────────────────────────
-  // (wired in C2)
+  // Lists GET /templates ({uuid,name,description,tags}); filters across
+  // name + description + tags; on select, fetches the full definition.
+  async function loadTemplateList() {
+    let templates = [];
+    try {
+      const res = await fetch(`${apiBase()}/templates`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      templates = await res.json();
+      if (!Array.isArray(templates)) templates = [];
+    } catch (err) {
+      console.error('Error loading templates:', err);
+      showToast('Could not load the template list.', false);
+    }
+
+    const input    = document.getElementById('template-select');
+    const dropdown = document.getElementById('tmpl-dropdown');
+    const listEl   = document.getElementById('tmpl-list');
+    const clearBtn = document.getElementById('tmpl-clear');
+    let focusIdx   = -1;
+
+    function haystack(t) {
+      return [t.name, t.description, ...(t.tags || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+    }
+
+    function highlightMatch(text, query) {
+      text = text || '';
+      if (!query) return escHtml(text);
+      const idx = text.toLowerCase().indexOf(query.toLowerCase());
+      if (idx === -1) return escHtml(text);
+      return escHtml(text.slice(0, idx))
+        + '<mark>' + escHtml(text.slice(idx, idx + query.length)) + '</mark>'
+        + escHtml(text.slice(idx + query.length));
+    }
+
+    function renderList(query) {
+      const q        = (query || '').toLowerCase();
+      const filtered = q ? templates.filter(t => haystack(t).includes(q)) : templates;
+      focusIdx       = -1;
+      listEl.innerHTML = '';
+
+      if (!filtered.length) {
+        const msg = document.createElement('div');
+        msg.className   = 'tmpl-empty';
+        msg.textContent = templates.length ? 'No matching templates' : 'No templates available';
+        listEl.appendChild(msg);
+        return;
+      }
+
+      filtered.forEach(t => {
+        const item = document.createElement('div');
+        item.className    = 'tmpl-item';
+        item.dataset.uuid = t.uuid;
+        item.dataset.name = t.name || '';
+        let html = `<div class="tmpl-item-name">${highlightMatch(t.name, query)}</div>`;
+        if (t.description) html += `<div class="tmpl-item-desc">${highlightMatch(t.description, query)}</div>`;
+        item.innerHTML = html;
+        item.addEventListener('mousedown', e => {
+          e.preventDefault();               // keep focus on input
+          selectTemplate(t);
+        });
+        listEl.appendChild(item);
+      });
+    }
+
+    function openDropdown() {
+      renderList(input.value.trim());
+      dropdown.style.display = 'block';
+    }
+    function closeDropdown() {
+      dropdown.style.display = 'none';
+      focusIdx = -1;
+    }
+
+    function selectTemplate(t) {
+      input.value            = t.name || '';
+      clearBtn.style.display = 'block';
+      closeDropdown();
+      loadTemplateDefinition(t.uuid);
+    }
+
+    function moveFocus(delta) {
+      const items = listEl.querySelectorAll('.tmpl-item');
+      if (!items.length) return;
+      items[focusIdx]?.classList.remove('tmpl-focused');
+      focusIdx = Math.max(0, Math.min(items.length - 1, focusIdx + delta));
+      items[focusIdx].classList.add('tmpl-focused');
+      items[focusIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    input.addEventListener('focus', openDropdown);
+    input.addEventListener('input', () => {
+      clearBtn.style.display = input.value.trim() ? 'block' : 'none';
+      openDropdown();
+    });
+    input.addEventListener('keydown', e => {
+      if (dropdown.style.display === 'none') { openDropdown(); return; }
+      if      (e.key === 'ArrowDown') { e.preventDefault(); moveFocus(+1); }
+      else if (e.key === 'ArrowUp')   { e.preventDefault(); moveFocus(-1); }
+      else if (e.key === 'Escape')    { closeDropdown(); input.blur(); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        const items   = listEl.querySelectorAll('.tmpl-item');
+        const focused = items[focusIdx];
+        if (focused) {
+          selectTemplate({ uuid: focused.dataset.uuid, name: focused.dataset.name });
+        } else {
+          const match = templates.find(t => (t.name || '').toLowerCase() === input.value.trim().toLowerCase());
+          if (match) selectTemplate(match);
+        }
+      }
+    });
+    input.addEventListener('blur', () => setTimeout(closeDropdown, 150));
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      clearBtn.style.display = 'none';
+      input.focus();
+    });
+    document.addEventListener('click', e => {
+      if (!document.getElementById('tmpl-combobox').contains(e.target)) closeDropdown();
+    });
+  }
+
+  // Fetch a full definition by uuid and render its form.
+  async function loadTemplateDefinition(uuid) {
+    try {
+      const res = await fetch(`${apiBase()}/templates/${encodeURIComponent(uuid)}`);
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      const definition = await res.json();
+      renderDefinition(definition);
+    } catch (err) {
+      console.error('Error loading template definition:', err);
+      showToast(`Could not load template: ${err.message}`, false);
+    }
+  }
 
   // ── Element renderers ──────────────────────────────────────────
-  // (filled in C3–C6)
+  // Dispatch: build the header banner, then render the structure into
+  // section cards. Interactive element widgets are filled in C3–C6.
+  function renderDefinition(definition) {
+    currentDefinition = definition;
+
+    // Header banner: name + description + library tags.
+    const headerEl = document.getElementById('template-header');
+    headerEl.innerHTML = '';
+    const h3 = document.createElement('h3');
+    h3.textContent = definition.name || 'Untitled template';
+    headerEl.appendChild(h3);
+    if (definition.description) {
+      const p = document.createElement('p');
+      p.textContent = definition.description;
+      headerEl.appendChild(p);
+    }
+    const tags = (definition.library_metadata && definition.library_metadata.tags) || [];
+    tags.forEach(tag => {
+      const span = document.createElement('span');
+      span.className = 'tmpl-tag';
+      span.textContent = tag;
+      headerEl.appendChild(span);
+    });
+
+    // Form container: rebuild from scratch.
+    const container = document.getElementById('template-form');
+    container.innerHTML = '';
+    const form = document.createElement('form');
+    form.id = 'report-form';
+    form.noValidate = true;
+
+    // Section grouping: sections are top-level cards; every other element
+    // renders into its parent section's body (or the root when parentless).
+    const structure = Array.isArray(definition.structure) ? definition.structure : [];
+    const sectionBodies = {};   // section id → DOM container to append children into
+
+    for (const el of structure) {
+      if (!el || typeof el !== 'object') continue;
+      if (el.type === 'section') {
+        const { card, body } = renderSection(el);
+        sectionBodies[el.id] = body;
+        form.appendChild(card);
+        continue;
+      }
+      const node = renderElement(el);
+      if (!node) continue;
+      const parent = el.parent && sectionBodies[el.parent] ? sectionBodies[el.parent] : form;
+      parent.appendChild(node);
+    }
+
+    // Submit button.
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'btn btn-primary btn-sm';
+    submitBtn.id = 'template-submit';
+    submitBtn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit';
+    form.appendChild(submitBtn);
+
+    form.onsubmit = e => { e.preventDefault(); /* submit wired in C9 */ };
+
+    container.appendChild(form);
+  }
+
+  // A section becomes a titled card; children are appended to its body.
+  function renderSection(el) {
+    const card = document.createElement('div');
+    card.className = 'card card-dark mb-3';
+    const body = document.createElement('div');
+    body.className = 'card-body';
+    if (el.label) {
+      const h = document.createElement('h5');
+      h.className = 'card-title h6 fw-semibold mb-1';
+      h.textContent = el.label;
+      body.appendChild(h);
+    }
+    card.appendChild(body);
+    return { card, body };
+  }
+
+  // Render a single interactive element. Per-type cases are added in
+  // C3–C6; unknown/not-yet-supported types fall through to a defensive note.
+  function renderElement(el) {
+    switch (el.type) {
+      case 'text_block':
+      case 'object_reference':
+        return null;               // non-interactive; handled in later commits
+      default: {
+        const note = document.createElement('div');
+        note.className = 'mb-3 text-secondary';
+        note.style.fontSize = '.8rem';
+        note.textContent = `[${el.type}] ${el.label || el.id || ''}`;
+        return note;
+      }
+    }
+  }
 
   // ── Event-level defaults + live info preview ───────────────────
   // (C7)
@@ -256,7 +496,7 @@
   // ── Init ───────────────────────────────────────────────────────
   async function initTemplatePage() {
     if (typeof loadConfig === 'function' && !baseUrl) await loadConfig();
-    // Template list + picker wiring lands in C2.
+    await loadTemplateList();
   }
 
   window.addEventListener('load', () => { initTemplatePage(); });
