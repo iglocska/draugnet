@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Draugnet – Report via Template</title>
+
+  <link href="css/fontawesome.all.min.css" rel="stylesheet" />
+  <link href="css/bootstrap.min.css" rel="stylesheet" />
+  <link href="css/style.css" rel="stylesheet" />
+
+  <script src="js/main.js"       defer></script>
+  <script src="js/tokenstore.js" defer></script>
+  <script src="js/menu.js"       defer></script>
+
+  <style>
+    /* ── Template picker combobox (shared idiom with object.html) ──── */
+    .tmpl-combobox { position: relative; }
+
+    .tmpl-combobox-wrap {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: .375rem;
+      padding: 0 .75rem;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .tmpl-combobox-wrap:focus-within {
+      border-color: var(--bs-primary);
+      box-shadow: 0 0 0 .2rem rgba(var(--bs-primary-rgb), .15);
+    }
+    .tmpl-combobox-wrap .fa-magnifying-glass {
+      color: var(--placeholder);
+      font-size: .8rem;
+      flex-shrink: 0;
+    }
+    #template-select {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      padding: .5rem 0;
+      font-size: .875rem;
+      color: var(--app-fg);
+      min-width: 0;
+    }
+    #template-select::placeholder { color: var(--placeholder); }
+
+    .tmpl-clear {
+      background: none;
+      border: none;
+      padding: .15rem .1rem;
+      color: var(--placeholder);
+      cursor: pointer;
+      font-size: .75rem;
+      line-height: 1;
+      flex-shrink: 0;
+      display: none;
+    }
+    .tmpl-clear:hover { color: var(--app-fg); }
+
+    .tmpl-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      z-index: 300;
+      background: var(--sidebar-bg);
+      border: 1px solid var(--card-border);
+      border-radius: .4rem;
+      box-shadow: 0 6px 24px rgba(0,0,0,.4);
+      overflow: hidden;
+    }
+    .tmpl-list {
+      max-height: 320px;
+      overflow-y: auto;
+      padding: .3rem 0;
+    }
+    .tmpl-item {
+      padding: .45rem .85rem;
+      font-size: .82rem;
+      color: var(--bs-secondary-color);
+      cursor: pointer;
+      transition: background .08s, color .08s;
+    }
+    .tmpl-item .tmpl-item-name {
+      color: var(--app-fg);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tmpl-item .tmpl-item-desc {
+      font-size: .74rem;
+      color: var(--bs-secondary-color);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .tmpl-item:hover,
+    .tmpl-item.tmpl-focused {
+      background: var(--hover-bg);
+    }
+    .tmpl-item mark {
+      background: rgba(var(--bs-warning-rgb), .25);
+      color: inherit;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+    .tmpl-empty {
+      padding: .75rem .85rem;
+      font-size: .82rem;
+      color: var(--placeholder);
+      text-align: center;
+    }
+
+    /* ── Template info banner — visible once a template is loaded ──── */
+    #template-header:not(:empty) {
+      border: 1px solid var(--card-border);
+      border-left: 3px solid var(--bs-info);
+      border-radius: .5rem;
+      padding: .7rem 1rem;
+      margin-bottom: 1rem;
+    }
+    #template-header h3 {
+      font-size: .95rem;
+      font-weight: 600;
+      margin-bottom: .15rem;
+    }
+    #template-header p {
+      font-size: .85rem;
+      color: var(--bs-secondary-color);
+      margin-bottom: .35rem;
+    }
+    #template-header .tmpl-tag {
+      display: inline-block;
+      font-size: .7rem;
+      padding: .1rem .45rem;
+      margin: 0 .25rem .2rem 0;
+      border-radius: 1rem;
+      background: var(--hover-bg);
+      color: var(--bs-secondary-color);
+    }
+
+    /* ── Dynamic form ─────────────────────────────────────────────── */
+    #report-form .btn-primary { margin-top: .5rem; }
+  </style>
+</head>
+<body data-page="template">
+  <div class="container-fluid">
+    <div class="row">
+      <div class="col-lg-8 col-md-7 col-sm-12">
+        <div id="menu-container"></div>
+
+        <div class="p-3">
+
+          <!-- Page header -->
+          <div class="mb-4">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <i class="fa-solid fa-wand-magic-sparkles fa-lg text-info" style="width:1.5rem;text-align:center"></i>
+              <h2 class="mb-0 h3">Report via Template</h2>
+            </div>
+            <p class="text-secondary mb-0" style="padding-left:2.1rem;font-size:.875rem">
+              Pick a guided template curated by the receiving team, fill in the fields with the
+              provided explanations, and submit — a structured MISP event is created for you.
+            </p>
+          </div>
+
+          <!-- Template selector card -->
+          <div class="card card-dark mb-3">
+            <div class="card-body">
+              <label for="template-select" class="form-label fw-semibold mb-2" style="font-size:.875rem">
+                Select template
+              </label>
+              <div class="tmpl-combobox" id="tmpl-combobox">
+                <div class="tmpl-combobox-wrap">
+                  <i class="fa-solid fa-magnifying-glass"></i>
+                  <input
+                    type="text"
+                    id="template-select"
+                    placeholder="Type to search templates…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button class="tmpl-clear" id="tmpl-clear" tabindex="-1" aria-label="Clear">
+                    <i class="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+                <div class="tmpl-dropdown" id="tmpl-dropdown">
+                  <div class="tmpl-list" id="tmpl-list"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Template info banner (populated by JS) -->
+          <div id="template-header"></div>
+
+          <!-- Event-level defaults panel (populated by JS, C7) -->
+          <div id="template-defaults"></div>
+
+          <!-- Slim metadata block (populated by JS, C8) -->
+          <div id="template-metadata"></div>
+
+          <!-- Dynamic form (populated by JS) -->
+          <div class="card card-dark">
+            <div class="card-body" id="template-form">
+              <p class="text-secondary mb-0" style="font-size:.875rem">
+                <i class="fa-solid fa-arrow-up me-1"></i>Choose a template above to reveal the form.
+              </p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="col-lg-4 col-md-5 col-sm-12" id="tokenstore-container"></div>
+    </div>
+  </div>
+
+  <script>
+/* ================================================================
+   Report via Template — page logic
+   Renders a guided form from an event-template definition and
+   submits it to POST /share/template. Backend contracts:
+     GET  /templates                 → [{uuid,name,description,tags}]
+     GET  /templates/{uuid}          → full event-template-v1 definition
+     GET  /object_templates?template → MISP object template (object_field)
+     GET  /taxonomies?ns=            → {entries:[{tag,…}]}  (tag_field)
+     GET  /galaxy_clusters?type=&q=  → {results:[{value,tag,…}]} (galaxy_field)
+     POST /share/template            → {token, event_uuid, status:"ok"}
+   ================================================================ */
+
+  // ── Module state (reset on every template load) ────────────────
+  let currentDefinition = null;
+
+  // ── Template picker ────────────────────────────────────────────
+  // (wired in C2)
+
+  // ── Element renderers ──────────────────────────────────────────
+  // (filled in C3–C6)
+
+  // ── Event-level defaults + live info preview ───────────────────
+  // (C7)
+
+  // ── Slim metadata (PAP / submitter / description) ──────────────
+  // (C8)
+
+  // ── Submit + validation ────────────────────────────────────────
+  // (C9)
+
+  // ── Init ───────────────────────────────────────────────────────
+  async function initTemplatePage() {
+    if (typeof loadConfig === 'function' && !baseUrl) await loadConfig();
+    // Template list + picker wiring lands in C2.
+  }
+
+  window.addEventListener('load', () => { initTemplatePage(); });
+  </script>
+
+  <script src="js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

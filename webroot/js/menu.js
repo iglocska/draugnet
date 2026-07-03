@@ -43,7 +43,7 @@ async function loadMenu() {
     setupTheme();
 
     const currentPage  = document.body.getAttribute('data-page');
-    const reportPages  = ['object', 'misp', 'freetext', 'stix', 'csv'];
+    const reportPages  = ['object', 'misp', 'freetext', 'stix', 'csv', 'template'];
 
     // Mark matching link/item as active
     document.querySelectorAll('#menu-container [data-page]').forEach(el => {
