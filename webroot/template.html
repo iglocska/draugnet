@@ -202,6 +202,94 @@
       background: rgba(255,255,255,.02);
     }
     .repeat-item > .object-instance { flex: 1; }
+
+    /* tag_field / galaxy_field token picker */
+    .token-picker { position: relative; }
+    .token-chips {
+      display: none;
+      flex-wrap: wrap;
+      gap: .3rem;
+      margin-bottom: .35rem;
+    }
+    .token-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      font-size: .78rem;
+      padding: .12rem .3rem .12rem .55rem;
+      border-radius: 1rem;
+      background: rgba(var(--bs-info-rgb), .15);
+      border: 1px solid rgba(var(--bs-info-rgb), .35);
+      color: var(--app-fg);
+    }
+    .token-chip-x {
+      background: none;
+      border: none;
+      color: var(--placeholder);
+      padding: 0 .1rem;
+      cursor: pointer;
+      line-height: 1;
+      font-size: .7rem;
+    }
+    .token-chip-x:hover { color: var(--bs-danger); }
+
+    .token-inputbox { position: relative; }
+    .token-input {
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: .375rem;
+      padding: .35rem .6rem;
+      font-size: .85rem;
+      color: var(--app-fg);
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .token-input::placeholder { color: var(--placeholder); }
+    .token-input:focus {
+      border-color: var(--bs-primary);
+      box-shadow: 0 0 0 .2rem rgba(var(--bs-primary-rgb), .15);
+    }
+
+    .token-dropdown {
+      position: absolute;
+      top: calc(100% + 3px);
+      left: 0;
+      right: 0;
+      z-index: 400;
+      background: var(--sidebar-bg);
+      border: 1px solid var(--card-border);
+      border-radius: .4rem;
+      box-shadow: 0 6px 24px rgba(0,0,0,.4);
+      max-height: 260px;
+      overflow-y: auto;
+      padding: .25rem 0;
+    }
+    .token-option {
+      padding: .35rem .7rem;
+      cursor: pointer;
+      transition: background .08s;
+    }
+    .token-option:hover,
+    .token-option.token-focused { background: var(--hover-bg); }
+    .token-opt-label {
+      font-size: .82rem;
+      color: var(--app-fg);
+      font-family: 'Courier New', Courier, monospace;
+    }
+    .token-opt-sub {
+      font-size: .72rem;
+      color: var(--bs-secondary-color);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .token-empty {
+      padding: .55rem .7rem;
+      font-size: .8rem;
+      color: var(--placeholder);
+      text-align: center;
+    }
   </style>
 </head>
 <body data-page="template">
@@ -648,6 +736,8 @@
       case 'text_block':      return renderTextBlock(el);
       case 'attribute_field': return renderAttributeField(el);
       case 'object_field':    return renderObjectField(el);
+      case 'tag_field':       return renderTagField(el);
+      case 'galaxy_field':    return renderGalaxyField(el);
       case 'object_reference': return null;   // materialised server-side (no UI)
       default: {
         const note = document.createElement('div');
@@ -867,6 +957,232 @@
       notifyFieldChange();
     })();
 
+    return group;
+  }
+
+  // Reusable chips + searchable-dropdown picker shared by tag_field and
+  // galaxy_field. `provider(query)` resolves to `[{value, label, sublabel}]`
+  // (a static filter for tags, an async typeahead for galaxies). Single-select
+  // replaces; multi-select accumulates chips. getValues() returns the emitted
+  // value strings (machine tag for tags, cluster value for galaxies).
+  function tokenPicker({ provider, multiple, placeholder }) {
+    const wrap = document.createElement('div');
+    wrap.className = 'token-picker';
+
+    const chips = document.createElement('div');
+    chips.className = 'token-chips';
+    wrap.appendChild(chips);
+
+    const box = document.createElement('div');
+    box.className = 'token-inputbox';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'token-input';
+    input.placeholder = placeholder || 'Type to search…';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    box.appendChild(input);
+    const drop = document.createElement('div');
+    drop.className = 'token-dropdown';
+    drop.style.display = 'none';
+    box.appendChild(drop);
+    wrap.appendChild(box);
+
+    const selected = [];   // {value, label}
+    let currentOpts = [];
+    let focusIdx = -1;
+
+    function renderChips() {
+      chips.innerHTML = '';
+      chips.style.display = selected.length ? 'flex' : 'none';
+      selected.forEach(s => {
+        const chip = document.createElement('span');
+        chip.className = 'token-chip';
+        const txt = document.createElement('span');
+        txt.textContent = s.label;
+        chip.appendChild(txt);
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'token-chip-x';
+        x.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        x.addEventListener('click', () => {
+          const i = selected.indexOf(s);
+          if (i >= 0) selected.splice(i, 1);
+          renderChips();
+          notifyFieldChange();
+        });
+        chip.appendChild(x);
+        chips.appendChild(chip);
+      });
+    }
+
+    function addSelection(opt) {
+      if (!multiple) selected.length = 0;
+      if (!selected.some(s => s.value === opt.value)) selected.push({ value: opt.value, label: opt.label });
+      renderChips();
+      input.value = '';
+      closeDrop();
+      notifyFieldChange();
+      if (!multiple) input.blur();
+    }
+
+    function highlight() {
+      const opts = drop.querySelectorAll('.token-option');
+      opts.forEach((o, i) => o.classList.toggle('token-focused', i === focusIdx));
+      if (opts[focusIdx]) opts[focusIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function renderDrop() {
+      drop.innerHTML = '';
+      if (!currentOpts.length) {
+        const e = document.createElement('div');
+        e.className = 'token-empty';
+        e.textContent = 'No matches';
+        drop.appendChild(e);
+      } else {
+        currentOpts.forEach(o => {
+          const it = document.createElement('div');
+          it.className = 'token-option';
+          let html = `<div class="token-opt-label">${escHtml(o.label)}</div>`;
+          if (o.sublabel) html += `<div class="token-opt-sub">${escHtml(o.sublabel)}</div>`;
+          it.innerHTML = html;
+          it.addEventListener('mousedown', e => { e.preventDefault(); addSelection(o); });
+          drop.appendChild(it);
+        });
+      }
+      drop.style.display = 'block';
+    }
+    function closeDrop() { drop.style.display = 'none'; focusIdx = -1; }
+
+    async function refresh() {
+      const q = input.value.trim();
+      let opts = [];
+      try { opts = await provider(q); } catch (_) { opts = []; }
+      currentOpts = opts.filter(o => !selected.some(s => s.value === o.value)).slice(0, 50);
+      focusIdx = -1;
+      renderDrop();
+    }
+
+    let deb;
+    input.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 180); });
+    input.addEventListener('focus', refresh);
+    input.addEventListener('blur', () => setTimeout(closeDrop, 150));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (drop.style.display === 'none') { refresh(); return; }
+        focusIdx = Math.min(currentOpts.length - 1, focusIdx + 1); highlight();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        focusIdx = Math.max(0, focusIdx - 1); highlight();
+      } else if (e.key === 'Enter') {
+        if (focusIdx >= 0 && currentOpts[focusIdx]) { e.preventDefault(); addSelection(currentOpts[focusIdx]); }
+      } else if (e.key === 'Escape') {
+        closeDrop();
+      } else if (e.key === 'Backspace' && !input.value && selected.length) {
+        selected.pop(); renderChips(); notifyFieldChange();
+      }
+    });
+
+    renderChips();
+    return { node: wrap, getValues: () => selected.map(s => s.value) };
+  }
+
+  // tag_field → taxonomy machine tags from bundled misp-taxonomies. Entries for
+  // every restrict_taxonomies namespace are lazy-loaded once, then filtered
+  // client-side. Emits the full machine tag (e.g. `tlp:amber`).
+  function renderTagField(el) {
+    const { group } = buildFieldGroup(el);
+    const namespaces = Array.isArray(el.restrict_taxonomies) ? el.restrict_taxonomies : [];
+    let entries = null;
+
+    async function loadEntries() {
+      if (entries) return entries;
+      entries = [];
+      for (const ns of namespaces) {
+        try {
+          const res = await fetch(`${apiBase()}/taxonomies?ns=${encodeURIComponent(ns)}`);
+          if (res.ok) {
+            const d = await res.json();
+            (d.entries || []).forEach(e => entries.push(e));
+          }
+        } catch (err) {
+          console.warn(`taxonomy "${ns}" fetch error:`, err);
+        }
+      }
+      return entries;
+    }
+
+    const provider = async (q) => {
+      const all = await loadEntries();
+      const ql = q.toLowerCase();
+      const filtered = ql
+        ? all.filter(e => (e.tag || '').toLowerCase().includes(ql) || (e.label || '').toLowerCase().includes(ql))
+        : all;
+      return filtered.map(e => ({
+        value: e.tag,
+        label: e.tag,
+        sublabel: e.label && e.label !== e.tag ? e.label : (e.description || ''),
+      }));
+    };
+
+    const picker = tokenPicker({
+      provider,
+      multiple: !!el.multiple,
+      placeholder: namespaces.length ? `Search ${namespaces.join(', ')} tags…` : 'Search tags…',
+    });
+    group.appendChild(picker.node);
+
+    const gather = () => {
+      const vals = picker.getValues();
+      if (!vals.length) return undefined;
+      return el.multiple ? vals : vals[0];
+    };
+    fieldWidgets.push({ id: el.id, type: 'tag_field', mandatory: !!el.mandatory, el, gather });
+    return group;
+  }
+
+  // galaxy_field → typeahead over bundled misp-galaxy clusters for the declared
+  // restrict_galaxy_types. Emits the cluster *value* string (e.g. `APT28`),
+  // which the backend resolves to its misp-galaxy tag.
+  function renderGalaxyField(el) {
+    const { group } = buildFieldGroup(el);
+    const types = Array.isArray(el.restrict_galaxy_types) ? el.restrict_galaxy_types : [];
+
+    const provider = async (q) => {
+      const seen = new Set();
+      const out = [];
+      for (const t of types) {
+        try {
+          const res = await fetch(`${apiBase()}/galaxy_clusters?type=${encodeURIComponent(t)}&q=${encodeURIComponent(q)}&limit=20`);
+          if (res.ok) {
+            const d = await res.json();
+            (d.results || []).forEach(c => {
+              if (seen.has(c.value)) return;
+              seen.add(c.value);
+              out.push({ value: c.value, label: c.value, sublabel: (c.description || '').slice(0, 120) });
+            });
+          }
+        } catch (err) {
+          console.warn(`galaxy "${t}" fetch error:`, err);
+        }
+      }
+      return out;
+    };
+
+    const picker = tokenPicker({
+      provider,
+      multiple: !!el.multiple,
+      placeholder: types.length ? `Search ${types.join(', ')}…` : 'Search clusters…',
+    });
+    group.appendChild(picker.node);
+
+    const gather = () => {
+      const vals = picker.getValues();
+      if (!vals.length) return undefined;
+      return el.multiple ? vals : vals[0];
+    };
+    fieldWidgets.push({ id: el.id, type: 'galaxy_field', mandatory: !!el.mandatory, el, gather });
     return group;
   }
 
