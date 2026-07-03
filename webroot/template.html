@@ -798,7 +798,63 @@
     form.onsubmit = e => { e.preventDefault(); /* submit wired in C9 */ };
 
     container.appendChild(form);
+    renderSlimMetadata();
     renderDefaults(definition);
+  }
+
+  // ── Slim metadata (PAP / submitter / description) (C8) ─────────
+  // The template owns info/distribution/threat/analysis/tags/galaxies (D5); the
+  // generic block contributes only PAP, submitter and an extra description.
+  function renderSlimMetadata() {
+    const host = document.getElementById('template-metadata');
+    host.innerHTML = `
+      <div class="card card-dark mb-3">
+        <div class="card-body">
+          <div class="defaults-head">
+            <i class="fa-solid fa-user-pen me-1"></i>Submission details
+            <span class="defaults-sub">— optional, added alongside the template</span>
+          </div>
+          <div class="mb-2">
+            <label for="tmpl-meta-pap" class="form-label mb-1">PAP
+              <small class="text-muted">(Permissible Actions Protocol)</small>
+            </label>
+            <select class="form-select form-select-sm" id="tmpl-meta-pap">
+              <option value="undefined">undefined</option>
+              <option value="PAP:CLEAR">PAP:CLEAR</option>
+              <option value="PAP:GREEN">PAP:GREEN</option>
+              <option value="PAP:AMBER">PAP:AMBER</option>
+              <option value="PAP:RED">PAP:RED</option>
+            </select>
+          </div>
+          <div class="mb-2">
+            <label for="tmpl-meta-submitter" class="form-label mb-1">Submitter
+              <small class="text-muted">(optional — feel free to stay anonymous)</small>
+            </label>
+            <input type="text" class="form-control form-control-sm" id="tmpl-meta-submitter"
+                   placeholder="Your or your organisation's name" autocomplete="off">
+          </div>
+          <div class="mb-0">
+            <label for="tmpl-meta-description" class="form-label mb-1">Additional description</label>
+            <textarea class="form-control form-control-sm" id="tmpl-meta-description" rows="2"
+                      placeholder="Anything the template's fields don't capture…"></textarea>
+          </div>
+        </div>
+      </div>`;
+    // {{user}} in the info preview tracks the submitter as it is typed.
+    document.getElementById('tmpl-meta-submitter').addEventListener('input', notifyFieldChange);
+  }
+
+  // Slim metadata → the `optional` block of the submission body. Only non-empty
+  // keys are sent (the backend ignores empty/"undefined" anyway).
+  function getSlimMetadata() {
+    const meta = {};
+    const pap = document.getElementById('tmpl-meta-pap')?.value;
+    if (pap && pap !== 'undefined') meta.pap = pap;
+    const submitter = (document.getElementById('tmpl-meta-submitter')?.value || '').trim();
+    if (submitter) meta.submitter = submitter;
+    const description = (document.getElementById('tmpl-meta-description')?.value || '').trim();
+    if (description) meta.description = description;
+    return meta;
   }
 
   // ── Event-level defaults + live info preview (C7) ──────────────
