@@ -307,6 +307,76 @@
       margin-top: .25rem;
       min-height: 1rem;
     }
+
+    /* Event-level defaults panel */
+    .defaults-card { border-left: 3px solid var(--bs-secondary); }
+    .defaults-head {
+      font-size: .82rem;
+      font-weight: 600;
+      margin-bottom: .55rem;
+    }
+    .defaults-sub {
+      font-weight: 400;
+      color: var(--bs-secondary-color);
+    }
+    .defaults-label {
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--bs-secondary-color);
+      margin-bottom: .15rem;
+    }
+    .info-preview {
+      font-size: .85rem;
+      font-family: 'Courier New', Courier, monospace;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: .3rem;
+      padding: .35rem .55rem;
+      color: var(--app-fg);
+      word-break: break-word;
+    }
+    .defaults-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .4rem;
+      margin: .5rem 0 .3rem;
+    }
+    .default-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      font-size: .74rem;
+      border: 1px solid var(--card-border);
+      border-radius: .3rem;
+      overflow: hidden;
+    }
+    .default-pill .dp-key {
+      background: var(--hover-bg);
+      color: var(--bs-secondary-color);
+      padding: .12rem .4rem;
+    }
+    .default-pill .dp-val {
+      padding: .12rem .45rem;
+      color: var(--app-fg);
+    }
+    .defaults-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .3rem;
+      margin-top: .4rem;
+    }
+    .default-chip {
+      font-size: .73rem;
+      padding: .1rem .5rem;
+      border-radius: 1rem;
+      background: var(--hover-bg);
+      color: var(--bs-secondary-color);
+    }
+    .default-chip-galaxy {
+      background: rgba(var(--bs-warning-rgb), .12);
+      color: var(--bs-body-color);
+    }
   </style>
 </head>
 <body data-page="template">
@@ -728,6 +798,134 @@
     form.onsubmit = e => { e.preventDefault(); /* submit wired in C9 */ };
 
     container.appendChild(form);
+    renderDefaults(definition);
+  }
+
+  // ── Event-level defaults + live info preview (C7) ──────────────
+  const DIST_LABELS = {
+    0: 'Your organisation only', 1: 'This community only',
+    2: 'Connected communities', 3: 'All communities', 4: 'Sharing group',
+  };
+  const THREAT_LABELS = { 1: 'High', 2: 'Medium', 3: 'Low', 4: 'Undefined' };
+  const ANALYSIS_LABELS = { 0: 'Initial', 1: 'Ongoing', 2: 'Completed' };
+
+  // Project current field values to what {{field:id}} can reference: scalars
+  // and lists of scalars only (object/file maps are dropped) — mirrors the
+  // server-side _flatten_field_values.
+  function currentValuesFlat() {
+    const flat = {};
+    for (const w of fieldWidgets) {
+      let v;
+      try { v = w.gather(); } catch (_) { v = undefined; }
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'object' && !Array.isArray(v)) continue;      // object map
+      if (Array.isArray(v) && !v.every(x => typeof x === 'string' || typeof x === 'number')) continue;
+      flat[w.id] = v;
+    }
+    return flat;
+  }
+
+  // Best-effort client preview of the substituted info_template. The server
+  // performs the authoritative substitution (A1); {{now}} here is UTC-ish.
+  function renderInfoPreview(tpl) {
+    if (typeof tpl !== 'string' || !tpl) return '';
+    const flat = currentValuesFlat();
+    const user = (document.getElementById('tmpl-meta-submitter')?.value || '').trim();
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    return tpl.replace(/\{\{(date|now|user|field:([a-zA-Z_][a-zA-Z0-9_]*))\}\}/g, (_m, expr, fid) => {
+      if (expr === 'date') return dateStr;
+      if (expr === 'now') return now.toISOString();
+      if (expr === 'user') return user;
+      const val = flat[fid];
+      if (val == null) return '';
+      return Array.isArray(val) ? (val.length ? String(val[0]) : '') : String(val);
+    });
+  }
+
+  // Render the template's event_defaults as a read-only panel. The template
+  // owns these (D5) — they are applied server-side and not reporter-editable —
+  // so this is informational; locked defaults are marked with a lock.
+  function renderDefaults(definition) {
+    const host = document.getElementById('template-defaults');
+    host.innerHTML = '';
+    const d = (definition && definition.event_defaults) || {};
+    const tags = Array.isArray(d.tags) ? d.tags : [];
+    const clusters = Array.isArray(d.galaxy_clusters) ? d.galaxy_clusters : [];
+    const hasInfo = typeof d.info_template === 'string' && d.info_template.trim();
+    const hasAny = hasInfo || d.distribution != null || d.threat_level_id != null ||
+                   d.analysis != null || tags.length || clusters.length;
+    if (!hasAny) return;
+
+    const card = document.createElement('div');
+    card.className = 'card card-dark mb-3 defaults-card';
+    const body = document.createElement('div');
+    body.className = 'card-body';
+    card.appendChild(body);
+
+    const head = document.createElement('div');
+    head.className = 'defaults-head';
+    head.innerHTML = '<i class="fa-solid fa-gear me-1"></i>This report will be created with these settings ' +
+                     '<span class="defaults-sub">— defined by the template</span>';
+    body.appendChild(head);
+
+    if (hasInfo) {
+      const block = document.createElement('div');
+      block.className = 'mb-2';
+      const lbl = document.createElement('div');
+      lbl.className = 'defaults-label';
+      lbl.textContent = 'Event title (preview)';
+      block.appendChild(lbl);
+      const preview = document.createElement('div');
+      preview.className = 'info-preview';
+      preview.id = 'info-preview';
+      block.appendChild(preview);
+      body.appendChild(block);
+
+      const update = () => { preview.textContent = renderInfoPreview(d.info_template) || '—'; };
+      fieldChangeListeners.push(update);
+      update();
+    }
+
+    const pills = document.createElement('div');
+    pills.className = 'defaults-pills';
+    const addPill = (label, value) => {
+      if (value == null) return;
+      const pill = document.createElement('span');
+      pill.className = 'default-pill';
+      pill.innerHTML = `<span class="dp-key">${escHtml(label)}</span><span class="dp-val">${escHtml(value)}</span>`;
+      pills.appendChild(pill);
+    };
+    if (d.distribution != null) addPill('Distribution', DIST_LABELS[d.distribution] ?? d.distribution);
+    if (d.threat_level_id != null) addPill('Threat level', THREAT_LABELS[d.threat_level_id] ?? d.threat_level_id);
+    if (d.analysis != null) addPill('Analysis', ANALYSIS_LABELS[d.analysis] ?? d.analysis);
+    if (pills.children.length) body.appendChild(pills);
+
+    if (tags.length || clusters.length) {
+      const chipRow = document.createElement('div');
+      chipRow.className = 'defaults-chips';
+      tags.forEach(t => {
+        if (!t || !t.name) return;
+        const chip = document.createElement('span');
+        chip.className = 'default-chip';
+        chip.innerHTML = (t.locked ? '<i class="fa-solid fa-lock me-1"></i>' : '') + escHtml(t.name);
+        chip.title = t.locked ? 'Locked by the template' : '';
+        chipRow.appendChild(chip);
+      });
+      clusters.forEach(c => {
+        if (!c || !c.value) return;
+        const chip = document.createElement('span');
+        chip.className = 'default-chip default-chip-galaxy';
+        const label = `${c.galaxy_type ? c.galaxy_type + ': ' : ''}${c.value}`;
+        chip.innerHTML = (c.locked ? '<i class="fa-solid fa-lock me-1"></i>' : '') + escHtml(label);
+        chip.title = c.locked ? 'Locked by the template' : '';
+        chipRow.appendChild(chip);
+      });
+      if (chipRow.children.length) body.appendChild(chipRow);
+    }
+
+    host.appendChild(card);
   }
 
   // A section becomes a titled card; children are appended to its body.
