@@ -148,6 +148,11 @@
 
     /* ── Dynamic form ─────────────────────────────────────────────── */
     #report-form .btn-primary { margin-top: .5rem; }
+    .field-invalid {
+      border-left: 2px solid var(--bs-danger);
+      padding-left: .6rem;
+      margin-left: -.6rem;
+    }
     #report-form .form-label { font-size: .82rem; font-weight: 600; }
     #report-form .form-text { font-size: .74rem; }
     #report-form .form-text code,
@@ -509,6 +514,7 @@
   function buildFieldGroup(el, { labelText, helpText } = {}) {
     const group = document.createElement('div');
     group.className = 'mb-3';
+    if (el && el.id) group.dataset.fieldId = el.id;
 
     const label = document.createElement('label');
     label.className = 'form-label mb-1';
@@ -795,7 +801,7 @@
     submitBtn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit';
     form.appendChild(submitBtn);
 
-    form.onsubmit = e => { e.preventDefault(); /* submit wired in C9 */ };
+    wireSubmit(form, submitBtn, definition);
 
     container.appendChild(form);
     renderSlimMetadata();
@@ -1565,8 +1571,126 @@
   // ── Slim metadata (PAP / submitter / description) ──────────────
   // (C8)
 
-  // ── Submit + validation ────────────────────────────────────────
-  // (C9)
+  // ── Submit + validation (C9) ───────────────────────────────────
+  function markWidgetError(w) {
+    const g = document.querySelector(`[data-field-id="${w.id}"]`);
+    if (g) g.classList.add('field-invalid');
+  }
+  function clearFieldErrors() {
+    document.querySelectorAll('.field-invalid').forEach(g => g.classList.remove('field-invalid'));
+  }
+
+  function isEmptyValue(v) {
+    return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+  }
+
+  // Collect mandatory-completeness errors. Mirrors the server checks that a
+  // reporter can pre-empt: mandatory elements present, and mandatory object
+  // relations filled in every submitted instance. `mark` toggles inline flags.
+  function collectErrors(mark) {
+    if (mark) clearFieldErrors();
+    const errors = [];
+    const fail = (w, message) => { errors.push({ w, message }); if (mark) markWidgetError(w); };
+
+    for (const w of fieldWidgets) {
+      let v; try { v = w.gather(); } catch (_) { v = undefined; }
+      const empty = isEmptyValue(v);
+      const label = w.el.label || w.id;
+
+      if (w.mandatory && empty) { fail(w, `"${label}" is required.`); continue; }
+
+      if (w.type === 'object_field' && !empty) {
+        const mand = (w.el.relations || [])
+          .filter(r => r && r.mandatory && r.object_relation)
+          .map(r => r.object_relation);
+        const instances = Array.isArray(v) ? v : [v];
+        instances.forEach((inst, i) => {
+          mand.forEach(rel => {
+            const rv = inst && inst[rel];
+            if (rv === undefined || rv === null || String(rv).trim() === '') {
+              fail(w, `"${label}"${instances.length > 1 ? ` (instance ${i + 1})` : ''}: "${rel}" is required.`);
+            }
+          });
+        });
+      }
+    }
+    return errors;
+  }
+
+  function wireSubmit(form, submitBtn, definition) {
+    const updateEnabled = () => { submitBtn.disabled = collectErrors(false).length > 0; };
+    fieldChangeListeners.push(updateEnabled);
+    updateEnabled();
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const errors = collectErrors(true);
+      if (errors.length) {
+        showToast(errors[0].message + (errors.length > 1 ? ` (+${errors.length - 1} more)` : ''), false);
+        const first = document.querySelector('.field-invalid');
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      await submitTemplate(definition, submitBtn);
+    };
+  }
+
+  // Gather all field values, attach the slim optional block, POST, and on
+  // success store the returned token (identical to the other submit pages).
+  async function submitTemplate(definition, submitBtn) {
+    const values = {};
+    for (const w of fieldWidgets) {
+      let v; try { v = w.gather(); } catch (_) { v = undefined; }
+      if (isEmptyValue(v)) continue;
+      values[w.id] = v;
+    }
+    const optional = getSlimMetadata();
+    const body = { template_uuid: definition.uuid, values };
+    if (Object.keys(optional).length) body.optional = optional;
+
+    const prevHtml = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Submitting…';
+
+    try {
+      const res = await fetch(`${apiBase()}/share/template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      let json = {}; try { json = await res.json(); } catch (_) {}
+
+      if (res.ok && json.status === 'ok') {
+        const tokens = getTokens();
+        if (json.token && !tokens.includes(json.token)) {
+          tokens.push(json.token);
+          saveTokens(tokens);
+        }
+        showToast('Report submitted successfully!');
+      } else {
+        showToast(`Submission failed: ${extractError(json, res.status)}`, false);
+      }
+    } catch (err) {
+      console.error('Template submission error:', err);
+      showToast('Network error — please try again.', false);
+    } finally {
+      submitBtn.innerHTML = prevHtml;
+      submitBtn.disabled = collectErrors(false).length > 0;
+    }
+  }
+
+  // The template submit path returns 400 with detail = {message, errors[]} on
+  // invalid input; flatten that (or a plain string detail) into one line.
+  function extractError(json, status) {
+    const detail = json && json.detail;
+    if (detail && typeof detail === 'object') {
+      if (Array.isArray(detail.errors) && detail.errors.length) {
+        return detail.errors[0] + (detail.errors.length > 1 ? ` (+${detail.errors.length - 1} more)` : '');
+      }
+      return detail.message || `HTTP ${status}`;
+    }
+    return detail || (json && (json.error || json.message)) || `HTTP ${status}`;
+  }
 
   // ── Init ───────────────────────────────────────────────────────
   async function initTemplatePage() {
