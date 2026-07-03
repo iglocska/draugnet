@@ -290,6 +290,23 @@
       color: var(--placeholder);
       text-align: center;
     }
+
+    /* file_field */
+    .file-intent {
+      font-size: .75rem;
+      color: var(--bs-secondary-color);
+    }
+    .file-intent code {
+      background: var(--hover-bg);
+      padding: .05rem .3rem;
+      border-radius: .2rem;
+    }
+    .file-info {
+      font-size: .74rem;
+      color: var(--bs-secondary-color);
+      margin-top: .25rem;
+      min-height: 1rem;
+    }
   </style>
 </head>
 <body data-page="template">
@@ -738,6 +755,8 @@
       case 'object_field':    return renderObjectField(el);
       case 'tag_field':       return renderTagField(el);
       case 'galaxy_field':    return renderGalaxyField(el);
+      case 'file_field':      return renderFileField(el);
+      case 'event_report':    return renderEventReport(el);
       case 'object_reference': return null;   // materialised server-side (no UI)
       default: {
         const note = document.createElement('div');
@@ -1183,6 +1202,106 @@
       return el.multiple ? vals : vals[0];
     };
     fieldWidgets.push({ id: el.id, type: 'galaxy_field', mandatory: !!el.mandatory, el, gather });
+    return group;
+  }
+
+  function formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;   // mirror the backend 50 MB body limit (S6)
+
+  // file_field → base64-encoded {filename, data}. The `as` intent is the
+  // author's; malware-sample encryption happens server-side on push, so the
+  // client only needs raw base64. Repeatable adds more files.
+  function renderFileField(el) {
+    const asKind = el.as === 'malware-sample' ? 'malware-sample' : 'attachment';
+    const { group } = buildFieldGroup(el);
+
+    const badge = document.createElement('div');
+    badge.className = 'file-intent mb-2';
+    badge.innerHTML = asKind === 'malware-sample'
+      ? '<i class="fa-solid fa-biohazard me-1"></i>Stored as <code>malware-sample</code> — encrypted server-side (password <code>infected</code>)'
+      : '<i class="fa-solid fa-paperclip me-1"></i>Stored as <code>attachment</code>';
+    group.appendChild(badge);
+
+    function makeInstance() {
+      const wrap = document.createElement('div');
+      wrap.className = 'file-instance';
+      let stored = null;   // {filename, data}
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.className = 'form-control form-control-sm';
+      const info = document.createElement('div');
+      info.className = 'file-info';
+      input.addEventListener('change', () => {
+        const f = input.files && input.files[0];
+        if (!f) { stored = null; info.textContent = ''; notifyFieldChange(); return; }
+        if (f.size > MAX_FILE_BYTES) {
+          stored = null; input.value = '';
+          info.textContent = `${f.name} is too large (max ${formatBytes(MAX_FILE_BYTES)}).`;
+          info.classList.add('text-danger');
+          showToast(`"${f.name}" exceeds the ${formatBytes(MAX_FILE_BYTES)} limit.`, false);
+          notifyFieldChange();
+          return;
+        }
+        info.classList.remove('text-danger');
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = String(reader.result || '');
+          const comma = res.indexOf(',');
+          stored = { filename: f.name, data: comma >= 0 ? res.slice(comma + 1) : res };
+          info.textContent = `${f.name} · ${formatBytes(f.size)}`;
+          notifyFieldChange();
+        };
+        reader.onerror = () => {
+          stored = null; info.textContent = 'Could not read the file.';
+          info.classList.add('text-danger'); notifyFieldChange();
+        };
+        reader.readAsDataURL(f);
+      });
+      wrap.appendChild(input);
+      wrap.appendChild(info);
+      return { node: wrap, gather: () => stored || undefined };
+    }
+
+    let gather;
+    if (el.repeatable) {
+      const rg = repeatableGroup(makeInstance, { itemLabel: 'file' });
+      group.appendChild(rg.node);
+      gather = () => { const arr = rg.gatherAll(); return arr.length ? arr : undefined; };
+    } else {
+      const inst = makeInstance();
+      group.appendChild(inst.node);
+      gather = () => inst.gather();
+    }
+
+    fieldWidgets.push({ id: el.id, type: 'file_field', mandatory: !!el.mandatory, el, gather });
+    return group;
+  }
+
+  // event_report → a Markdown body seeded with default_content. Emits the
+  // trimmed string (an EventReport row is created server-side).
+  function renderEventReport(el) {
+    const { group } = buildFieldGroup(el);
+
+    const ta = document.createElement('textarea');
+    ta.className = 'form-control form-control-sm';
+    ta.rows = 6;
+    ta.placeholder = 'Write in Markdown…';
+    if (el.default_content != null) ta.value = el.default_content;
+    ta.addEventListener('input', notifyFieldChange);
+    group.appendChild(ta);
+
+    const hint = document.createElement('small');
+    hint.className = 'form-text text-muted d-block mt-1';
+    hint.innerHTML = '<i class="fa-brands fa-markdown me-1"></i>Markdown supported.';
+    group.appendChild(hint);
+
+    const gather = () => { const v = ta.value.trim(); return v || undefined; };
+    fieldWidgets.push({ id: el.id, type: 'event_report', mandatory: !!el.mandatory, el, gather });
     return group;
   }
 
